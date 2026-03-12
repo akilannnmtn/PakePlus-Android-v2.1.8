@@ -47,43 +47,156 @@ window.open = function (url, target, features) {
 
 // ========== 核心修改部分 ==========
 // 1. 移除全局capture: true，仅拦截<a>标签点击（避免阻断图片长按）
-// 2. 添加passive: true，不阻断原生触摸事件
 document.addEventListener('click', (e) => {
-    // 只处理<a>标签的点击，其他元素（如图片）不触发hookClick
     if (e.target.closest('a')) {
         hookClick(e);
     }
 }, { passive: true });
 
-// 3. 强制放行图片的长按上下文菜单（PakePlus关键修复）
+// 2. 禁用原生图片上下文菜单（避免和自定义弹窗冲突）
 document.addEventListener('contextmenu', (e) => {
-    // 仅允许图片的长按/右键菜单，不影响其他逻辑
     if (e.target.tagName === 'IMG') {
-        return true; // 不阻止原生菜单弹出
+        e.preventDefault(); // 阻止原生长按菜单
     }
-}, { capture: false });
+}, { capture: true });
 
-// 4. 兜底：给图片添加自定义长按下载（防止PakePlus禁用原菜单时生效）
+// 3. 自定义长按弹窗核心逻辑
 let touchTimer = null;
+let currentImgUrl = ''; // 存储当前长按的图片链接
+
+// 创建自定义弹窗（仅创建一次，复用）
+const createImgDownloadModal = () => {
+    // 避免重复创建
+    if (document.getElementById('pake-img-modal')) return;
+
+    // 弹窗样式（适配移动端/桌面端，可自定义）
+    const modalStyle = `
+        position: fixed;
+        z-index: 999999; // 最高层级，避免被遮挡
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #fff;
+        border-radius: 8px;
+        padding: 20px;
+        width: 280px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        text-align: center;
+        font-family: sans-serif;
+    `;
+    const btnBoxStyle = `
+        display: flex;
+        justify-content: space-between;
+        margin-top: 20px;
+    `;
+    const btnStyle = `
+        padding: 8px 20px;
+        border: none;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+    `;
+    const saveBtnStyle = `
+        ${btnStyle}
+        background: #007aff;
+        color: #fff;
+    `;
+    const cancelBtnStyle = `
+        ${btnStyle}
+        background: #f5f5f5;
+        color: #333;
+    `;
+
+    // 弹窗DOM结构
+    const modal = document.createElement('div');
+    modal.id = 'pake-img-modal';
+    modal.style = modalStyle;
+    modal.innerHTML = `
+        <div style="font-size: 16px; color: #333; margin-bottom: 8px;">保存图片</div>
+        <div style="font-size: 12px; color: #666; margin-bottom: 10px;">是否将图片保存到本地？</div>
+        <div style="${btnBoxStyle}">
+            <button id="pake-save-img" style="${saveBtnStyle}">保存</button>
+            <button id="pake-cancel-img" style="${cancelBtnStyle}">取消</button>
+        </div>
+    `;
+
+    // 添加遮罩层
+    const mask = document.createElement('div');
+    mask.id = 'pake-img-mask';
+    mask.style = `
+        position: fixed;
+        z-index: 999998;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.5);
+    `;
+
+    // 插入到页面
+    document.body.appendChild(mask);
+    document.body.appendChild(modal);
+
+    // 保存按钮点击事件
+    document.getElementById('pake-save-img').addEventListener('click', () => {
+        if (currentImgUrl) {
+            // 触发图片下载
+            const a = document.createElement('a');
+            a.href = currentImgUrl;
+            a.download = `pake_img_${Date.now()}.${currentImgUrl.split('.').pop()}`;
+            a.click();
+            
+            // PakePlus原生提示（可选）
+            if (window.__TAURI__?.dialog) {
+                window.__TAURI__.dialog.message('图片已开始下载');
+            }
+        }
+        // 关闭弹窗
+        closeImgModal();
+    });
+
+    // 取消按钮点击事件
+    document.getElementById('pake-cancel-img').addEventListener('click', closeImgModal);
+
+    // 点击遮罩层关闭弹窗
+    mask.addEventListener('click', closeImgModal);
+};
+
+// 关闭弹窗函数
+const closeImgModal = () => {
+    const modal = document.getElementById('pake-img-modal');
+    const mask = document.getElementById('pake-img-mask');
+    if (modal) modal.remove();
+    if (mask) mask.remove();
+    currentImgUrl = ''; // 清空图片链接
+};
+
+// 监听图片长按事件
 document.addEventListener('touchstart', (e) => {
     const target = e.target;
     if (target.tagName === 'IMG' && e.touches.length === 1) {
-        // 长按500ms触发下载
+        // 存储当前图片链接
+        currentImgUrl = target.src;
+        // 长按500ms弹出弹窗
         touchTimer = setTimeout(() => {
-            const imgUrl = target.src;
-            const a = document.createElement('a');
-            a.href = imgUrl;
-            a.download = `pake_img_${Date.now()}.${imgUrl.split('.').pop()}`;
-            a.click();
-            // PakePlus内置提示（可选）
-            if (window.__TAURI__?.dialog) {
-                window.__TAURI__.dialog.message('图片下载已触发');
-            }
+            createImgDownloadModal(); // 创建并显示弹窗
         }, 500);
     }
 }, { passive: true });
 
-// 触摸结束取消长按
+// 触摸结束/离开取消长按
 document.addEventListener('touchend', () => {
     if (touchTimer) clearTimeout(touchTimer);
 }, { passive: true });
+document.addEventListener('touchmove', () => {
+    if (touchTimer) clearTimeout(touchTimer);
+}, { passive: true });
+
+// 桌面端兼容：右键图片也弹出自定义弹窗
+document.addEventListener('mousedown', (e) => {
+    if (e.button === 2 && e.target.tagName === 'IMG') { // 右键（2）点击图片
+        e.preventDefault();
+        currentImgUrl = e.target.src;
+        createImgDownloadModal();
+    }
+}, { capture: true });
