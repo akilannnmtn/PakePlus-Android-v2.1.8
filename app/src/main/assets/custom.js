@@ -53,14 +53,14 @@ document.addEventListener('click', (e) => {
     }
 }, { passive: true });
 
-// 2. 禁用原生图片上下文菜单（避免和自定义弹窗冲突）
+// 2. 全局禁用原生图片上下文菜单（无论是否全屏）
 document.addEventListener('contextmenu', (e) => {
     if (e.target.tagName === 'IMG') {
-        e.preventDefault(); // 阻止原生长按菜单
+        e.preventDefault(); // 阻止所有图片的原生长按菜单
     }
 }, { capture: true });
 
-// 3. 自定义长按弹窗核心逻辑
+// 3. 自定义长按弹窗核心逻辑（强制绑定到所有图片）
 let touchTimer = null;
 let currentImgUrl = ''; // 存储当前长按的图片链接
 
@@ -69,10 +69,10 @@ const createImgDownloadModal = () => {
     // 避免重复创建
     if (document.getElementById('pake-img-modal')) return;
 
-    // 弹窗样式（适配移动端/桌面端，可自定义）
+    // 弹窗样式（适配移动端/桌面端，最高层级防遮挡）
     const modalStyle = `
         position: fixed;
-        z-index: 999999; // 最高层级，避免被遮挡
+        z-index: 9999999 !important; // 提升层级，确保不被遮挡
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
@@ -83,18 +83,21 @@ const createImgDownloadModal = () => {
         box-shadow: 0 4px 20px rgba(0,0,0,0.2);
         text-align: center;
         font-family: sans-serif;
+        border: 1px solid #eee;
     `;
     const btnBoxStyle = `
         display: flex;
         justify-content: space-between;
         margin-top: 20px;
+        gap: 10px;
     `;
     const btnStyle = `
-        padding: 8px 20px;
+        padding: 8px 0;
         border: none;
         border-radius: 4px;
         font-size: 14px;
         cursor: pointer;
+        flex: 1; // 按钮等分宽度
     `;
     const saveBtnStyle = `
         ${btnStyle}
@@ -120,12 +123,12 @@ const createImgDownloadModal = () => {
         </div>
     `;
 
-    // 添加遮罩层
+    // 添加遮罩层（最高层级）
     const mask = document.createElement('div');
     mask.id = 'pake-img-mask';
     mask.style = `
         position: fixed;
-        z-index: 999998;
+        z-index: 9999998 !important;
         top: 0;
         left: 0;
         width: 100%;
@@ -133,7 +136,7 @@ const createImgDownloadModal = () => {
         background: rgba(0,0,0,0.5);
     `;
 
-    // 插入到页面
+    // 插入到页面（强制加到body最外层）
     document.body.appendChild(mask);
     document.body.appendChild(modal);
 
@@ -146,12 +149,11 @@ const createImgDownloadModal = () => {
             a.download = `pake_img_${Date.now()}.${currentImgUrl.split('.').pop()}`;
             a.click();
             
-            // PakePlus原生提示（可选）
+            // PakePlus原生提示
             if (window.__TAURI__?.dialog) {
                 window.__TAURI__.dialog.message('图片已开始下载');
             }
         }
-        // 关闭弹窗
         closeImgModal();
     });
 
@@ -168,33 +170,61 @@ const closeImgModal = () => {
     const mask = document.getElementById('pake-img-mask');
     if (modal) modal.remove();
     if (mask) mask.remove();
-    currentImgUrl = ''; // 清空图片链接
+    currentImgUrl = '';
 };
 
-// 监听图片长按事件
+// ========== 关键修复：强制监听所有图片的长按事件 ==========
+// 方案1：直接给所有img标签绑定touchstart（优先级最高）
+document.addEventListener('DOMContentLoaded', () => {
+    // 页面加载完成后，给所有图片绑定长按事件
+    const allImgs = document.querySelectorAll('img');
+    allImgs.forEach(img => {
+        // 强制设置图片可触摸，解决遮挡问题
+        img.style.pointerEvents = 'auto';
+        img.style.touchAction = 'manipulation';
+        
+        // 单独绑定touchstart，避免事件冒泡丢失
+        img.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                currentImgUrl = img.src;
+                // 清除之前的定时器，避免重复触发
+                if (touchTimer) clearTimeout(touchTimer);
+                // 长按500ms弹出弹窗
+                touchTimer = setTimeout(() => {
+                    createImgDownloadModal();
+                }, 500);
+            }
+        }, { passive: true, capture: true }); // 捕获阶段触发，优先响应
+    });
+});
+
+// 方案2：全局touchstart兜底（确保无遗漏）
 document.addEventListener('touchstart', (e) => {
     const target = e.target;
-    if (target.tagName === 'IMG' && e.touches.length === 1) {
-        // 存储当前图片链接
+    // 只处理img标签，且排除全屏图片（可选）
+    if (target.tagName === 'IMG' && !target.classList.contains('fullscreen-img')) {
         currentImgUrl = target.src;
-        // 长按500ms弹出弹窗
+        if (touchTimer) clearTimeout(touchTimer);
         touchTimer = setTimeout(() => {
-            createImgDownloadModal(); // 创建并显示弹窗
+            createImgDownloadModal();
         }, 500);
     }
-}, { passive: true });
+}, { passive: true, capture: true }); // 捕获阶段触发，优先于其他事件
 
-// 触摸结束/离开取消长按
+// 触摸结束/移动/离开都取消长按
 document.addEventListener('touchend', () => {
     if (touchTimer) clearTimeout(touchTimer);
 }, { passive: true });
 document.addEventListener('touchmove', () => {
     if (touchTimer) clearTimeout(touchTimer);
 }, { passive: true });
+document.addEventListener('touchcancel', () => {
+    if (touchTimer) clearTimeout(touchTimer);
+}, { passive: true });
 
-// 桌面端兼容：右键图片也弹出自定义弹窗
+// 桌面端兼容：右键图片弹弹窗
 document.addEventListener('mousedown', (e) => {
-    if (e.button === 2 && e.target.tagName === 'IMG') { // 右键（2）点击图片
+    if (e.button === 2 && e.target.tagName === 'IMG') {
         e.preventDefault();
         currentImgUrl = e.target.src;
         createImgDownloadModal();
