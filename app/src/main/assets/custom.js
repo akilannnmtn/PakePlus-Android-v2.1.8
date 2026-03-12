@@ -1,232 +1,141 @@
 window.addEventListener("DOMContentLoaded",()=>{const t=document.createElement("script");t.src="https://www.googletagmanager.com/gtag/js?id=G-W5GKHM0893",t.async=!0,document.head.appendChild(t);const n=document.createElement("script");n.textContent="window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}gtag('js', new Date());gtag('config', 'G-W5GKHM0893');",document.body.appendChild(n)});// very important, if you don't know what it is, don't touch it
-// 非常重要，不懂代码不要动，这里可以解决80%的问题，也可以生产1000+的bug
 const hookClick = (e) => {
     const origin = e.target.closest('a')
-    const isBaseTargetBlank = document.querySelector(
-        'head base[target="_blank"]'
-    )
-    console.log('origin', origin, isBaseTargetBlank)
+    const isBaseTargetBlank = document.querySelector('head base[target="_blank"]')
     
-    // 新增：判断是否是下载链接（排除图片/文件下载）
     const isDownloadLink = origin && origin.href && (
-        // 匹配常见图片后缀
         /\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i.test(origin.href) ||
-        // 匹配Content-Disposition为下载的链接（后端标记的下载链接）
         origin.download || 
-        // 可添加其他文件后缀，比如zip/pdf等
         /\.(zip|pdf|docx|xlsx)$/i.test(origin.href)
     )
 
-    // 修改判断逻辑：仅拦截非下载类的_blank链接
     if (
         (origin && origin.href && origin.target === '_blank' && !isDownloadLink) ||
         (origin && origin.href && isBaseTargetBlank && !isDownloadLink)
     ) {
         e.preventDefault()
-        console.log('handle origin', origin)
         location.href = origin.href
-    } else {
-        console.log('not handle origin', origin)
     }
 }
 
-// 重写window.open，但排除下载链接（统一后缀规则）
 window.open = function (url, target, features) {
-    console.log('open', url, target, features)
-    // 统一下载链接后缀，和上面hookClick保持一致
-    const isDownloadUrl = url && (
-        /\.(jpg|jpeg|png|gif|webp|svg|bmp|zip|pdf|docx|xlsx)$/i.test(url)
-    )
+    const isDownloadUrl = url && /\.(jpg|jpeg|png|gif|webp|svg|bmp|zip|pdf|docx|xlsx)$/i.test(url)
     if (isDownloadUrl) {
-        // PakePlus基于Tauri，直接调用原生open恢复下载
         return window.__TAURI_INTERNALS__.window.open(url, target, features)
     } else {
         location.href = url
     }
 }
 
-// ========== 核心修改部分 ==========
-// 1. 移除全局capture: true，仅拦截<a>标签点击（避免阻断图片长按）
 document.addEventListener('click', (e) => {
     if (e.target.closest('a')) {
         hookClick(e);
     }
 }, { passive: true });
 
-// 2. 全局禁用原生图片上下文菜单（无论是否全屏）
-document.addEventListener('contextmenu', (e) => {
-    if (e.target.tagName === 'IMG') {
-        e.preventDefault(); // 阻止所有图片的原生长按菜单
-    }
-}, { capture: true });
+// ========== 核心：精准区分轻触/长按（保留轻触点开图片） ==========
+let pressTimer = null;
+let isLongPressTriggered = false; // 标记是否触发了长按
+let currentImgSrc = '';
 
-// 3. 自定义长按弹窗核心逻辑（强制绑定到所有图片）
-let touchTimer = null;
-let currentImgUrl = ''; // 存储当前长按的图片链接
+// 1. 保存弹窗（极简稳定版）
+function showSaveModal() {
+    // 移除旧弹窗
+    const oldModal = document.getElementById('img-save-modal');
+    if (oldModal) oldModal.remove();
 
-// 创建自定义弹窗（仅创建一次，复用）
-const createImgDownloadModal = () => {
-    // 避免重复创建
-    if (document.getElementById('pake-img-modal')) return;
-
-    // 弹窗样式（适配移动端/桌面端，最高层级防遮挡）
-    const modalStyle = `
-        position: fixed;
-        z-index: 9999999 !important; // 提升层级，确保不被遮挡
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: #fff;
-        border-radius: 8px;
-        padding: 20px;
-        width: 280px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-        text-align: center;
-        font-family: sans-serif;
-        border: 1px solid #eee;
-    `;
-    const btnBoxStyle = `
-        display: flex;
-        justify-content: space-between;
-        margin-top: 20px;
-        gap: 10px;
-    `;
-    const btnStyle = `
-        padding: 8px 0;
-        border: none;
-        border-radius: 4px;
-        font-size: 14px;
-        cursor: pointer;
-        flex: 1; // 按钮等分宽度
-    `;
-    const saveBtnStyle = `
-        ${btnStyle}
-        background: #007aff;
-        color: #fff;
-    `;
-    const cancelBtnStyle = `
-        ${btnStyle}
-        background: #f5f5f5;
-        color: #333;
-    `;
-
-    // 弹窗DOM结构
+    // 弹窗DOM（层级拉满，避免遮挡）
     const modal = document.createElement('div');
-    modal.id = 'pake-img-modal';
-    modal.style = modalStyle;
+    modal.id = 'img-save-modal';
+    modal.style = `
+        position: fixed; top:0; left:0; width:100%; height:100%; z-index:999999;
+        display:flex; justify-content:center; align-items:center;
+        pointer-events: auto;
+    `;
     modal.innerHTML = `
-        <div style="font-size: 16px; color: #333; margin-bottom: 8px;">保存图片</div>
-        <div style="font-size: 12px; color: #666; margin-bottom: 10px;">是否将图片保存到本地？</div>
-        <div style="${btnBoxStyle}">
-            <button id="pake-save-img" style="${saveBtnStyle}">保存</button>
-            <button id="pake-cancel-img" style="${cancelBtnStyle}">取消</button>
+        <div style="width:100%; height:100%; background:rgba(0,0,0,0.5); position:absolute;"></div>
+        <div style="background:#fff; padding:24px; border-radius:12px; z-index:1000000; width:280px; text-align:center;">
+            <div style="font-size:17px; color:#1a1a1a; margin-bottom:12px;">保存图片</div>
+            <div style="font-size:14px; color:#666; margin-bottom:20px;">是否保存到本地？</div>
+            <div style="display:flex; gap:12px;">
+                <button onclick="downloadCurrentImg()" style="flex:1; padding:10px 0; background:#007aff; color:#fff; border:none; border-radius:8px; font-size:16px;">保存</button>
+                <button onclick="closeSaveModal()" style="flex:1; padding:10px 0; background:#f5f5f7; color:#333; border:none; border-radius:8px; font-size:16px;">取消</button>
+            </div>
         </div>
     `;
-
-    // 添加遮罩层（最高层级）
-    const mask = document.createElement('div');
-    mask.id = 'pake-img-mask';
-    mask.style = `
-        position: fixed;
-        z-index: 9999998 !important;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0,0,0,0.5);
-    `;
-
-    // 插入到页面（强制加到body最外层）
-    document.body.appendChild(mask);
     document.body.appendChild(modal);
+}
 
-    // 保存按钮点击事件
-    document.getElementById('pake-save-img').addEventListener('click', () => {
-        if (currentImgUrl) {
-            // 触发图片下载
-            const a = document.createElement('a');
-            a.href = currentImgUrl;
-            a.download = `pake_img_${Date.now()}.${currentImgUrl.split('.').pop()}`;
-            a.click();
-            
-            // PakePlus原生提示
-            if (window.__TAURI__?.dialog) {
-                window.__TAURI__.dialog.message('图片已开始下载');
-            }
-        }
-        closeImgModal();
-    });
-
-    // 取消按钮点击事件
-    document.getElementById('pake-cancel-img').addEventListener('click', closeImgModal);
-
-    // 点击遮罩层关闭弹窗
-    mask.addEventListener('click', closeImgModal);
-};
-
-// 关闭弹窗函数
-const closeImgModal = () => {
-    const modal = document.getElementById('pake-img-modal');
-    const mask = document.getElementById('pake-img-mask');
+// 2. 关闭弹窗
+window.closeSaveModal = function() {
+    const modal = document.getElementById('img-save-modal');
     if (modal) modal.remove();
-    if (mask) mask.remove();
-    currentImgUrl = '';
+    isLongPressTriggered = false;
 };
 
-// ========== 关键修复：强制监听所有图片的长按事件 ==========
-// 方案1：直接给所有img标签绑定touchstart（优先级最高）
-document.addEventListener('DOMContentLoaded', () => {
-    // 页面加载完成后，给所有图片绑定长按事件
-    const allImgs = document.querySelectorAll('img');
-    allImgs.forEach(img => {
-        // 强制设置图片可触摸，解决遮挡问题
-        img.style.pointerEvents = 'auto';
-        img.style.touchAction = 'manipulation';
-        
-        // 单独绑定touchstart，避免事件冒泡丢失
-        img.addEventListener('touchstart', (e) => {
-            if (e.touches.length === 1) {
-                currentImgUrl = img.src;
-                // 清除之前的定时器，避免重复触发
-                if (touchTimer) clearTimeout(touchTimer);
-                // 长按500ms弹出弹窗
-                touchTimer = setTimeout(() => {
-                    createImgDownloadModal();
-                }, 500);
-            }
-        }, { passive: true, capture: true }); // 捕获阶段触发，优先响应
-    });
-});
-
-// 方案2：全局touchstart兜底（确保无遗漏）
-document.addEventListener('touchstart', (e) => {
-    const target = e.target;
-    // 只处理img标签，且排除全屏图片（可选）
-    if (target.tagName === 'IMG' && !target.classList.contains('fullscreen-img')) {
-        currentImgUrl = target.src;
-        if (touchTimer) clearTimeout(touchTimer);
-        touchTimer = setTimeout(() => {
-            createImgDownloadModal();
-        }, 500);
+// 3. 下载当前图片
+window.downloadCurrentImg = function() {
+    if (!currentImgSrc) return;
+    const a = document.createElement('a');
+    a.href = currentImgSrc;
+    a.download = `img_${Date.now()}.${currentImgSrc.split('.').pop()}`;
+    a.click();
+    closeSaveModal();
+    // PakePlus原生提示
+    if (window.__TAURI__?.dialog) {
+        window.__TAURI__.dialog.message('图片已开始下载');
     }
-}, { passive: true, capture: true }); // 捕获阶段触发，优先于其他事件
+};
 
-// 触摸结束/移动/离开都取消长按
-document.addEventListener('touchend', () => {
-    if (touchTimer) clearTimeout(touchTimer);
-}, { passive: true });
-document.addEventListener('touchmove', () => {
-    if (touchTimer) clearTimeout(touchTimer);
-}, { passive: true });
-document.addEventListener('touchcancel', () => {
-    if (touchTimer) clearTimeout(touchTimer);
+// 4. 核心：监听图片的触摸事件（精准区分轻触/长按）
+document.addEventListener('touchstart', function(e) {
+    // 只处理图片，且单指触摸
+    if (e.target.tagName === 'IMG' && e.touches.length === 1) {
+        currentImgSrc = e.target.src;
+        // 长按600ms触发弹窗（这个时长是移动端区分轻触/长按的黄金值）
+        pressTimer = setTimeout(() => {
+            isLongPressTriggered = true; // 标记：触发了长按
+            showSaveModal(); // 弹出保存弹窗
+            // 阻止长按后触发轻触的“点开图片”行为
+            e.preventDefault();
+        }, 600);
+    }
+}, { passive: false }); // 关键：passive: false，允许阻止默认行为
+
+// 5. 触摸结束：区分轻触/长按
+document.addEventListener('touchend', function(e) {
+    clearTimeout(pressTimer); // 清除长按定时器
+    // 如果是轻触（没触发长按），保留“点开图片”的原有行为
+    if (!isLongPressTriggered && e.target.tagName === 'IMG') {
+        return; // 不做任何拦截，让图片正常点开
+    }
+    // 如果是长按后松开，关闭弹窗（避免误触）
+    if (isLongPressTriggered) {
+        e.preventDefault(); // 阻止长按后松开触发点开图片
+        isLongPressTriggered = false;
+    }
+}, { passive: false });
+
+// 6. 触摸移动：取消长按
+document.addEventListener('touchmove', function() {
+    clearTimeout(pressTimer);
+    isLongPressTriggered = false;
+    closeSaveModal(); // 移动手指时关闭弹窗
 }, { passive: true });
 
-// 桌面端兼容：右键图片弹弹窗
-document.addEventListener('mousedown', (e) => {
-    if (e.button === 2 && e.target.tagName === 'IMG') {
+// 7. 禁用原生图片右键菜单（桌面端兼容）
+document.addEventListener('contextmenu', function(e) {
+    if (e.target.tagName === 'IMG') {
         e.preventDefault();
-        currentImgUrl = e.target.src;
-        createImgDownloadModal();
+        currentImgSrc = e.target.src;
+        showSaveModal();
     }
-}, { capture: true });
+}, { passive: false });
+
+// 8. 桌面端右键图片弹弹窗
+document.addEventListener('mousedown', function(e) {
+    if (e.button === 2 && e.target.tagName === 'IMG') {
+        currentImgSrc = e.target.src;
+        showSaveModal();
+    }
+}, { passive: false });
