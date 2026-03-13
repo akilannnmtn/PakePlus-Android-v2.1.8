@@ -31,46 +31,83 @@ window.open = function (url, target, features) {
 
 document.addEventListener('click', hookClick, { capture: true })
 
-// ==================== 长按弹窗（防重复·最终版）====================
+// ==================== 全屏开屏广告（仅APP启动显示）====================
+function showSplash() {
+  // 标记：是否是APP首次启动（用sessionStorage，关闭APP后重置）
+  const isAppFirstStart = sessionStorage.getItem('isAppFirstStart')
+  if (isAppFirstStart) return // 非首次启动，不显示开屏图
+
+  // 标记为已启动，后续跳转不再显示
+  sessionStorage.setItem('isAppFirstStart', 'true')
+
+  const splash = document.createElement('div')
+  splash.id = 'splash'
+  splash.style.cssText = `
+    position:fixed !important; 
+    z-index:9999999 !important; 
+    left:0; top:0;
+    width:100vw !important; 
+    height:100vh !important;
+    background:#000 !important;
+    display:flex !important; 
+    align-items:center !important; 
+    justify-content:center !important;
+    overflow:hidden !important;
+  `
+  // ↓↓↓ 替换成你的开屏图链接 ↓↓↓
+  splash.innerHTML = `
+    <img src="https://welovejosuhan.com/yeka/app/start.jpg" 
+         style="position:absolute !important; width:100% !important; height:100% !important; object-fit:cover !important;">
+    <div id="skip" 
+         style="position:absolute;top:20px;right:20px;background:rgba(0,0,0,0.6);color:#fff;padding:6px 12px;border-radius:20px;font-size:14px;">
+         跳过 10
+    </div>
+  `
+  document.body.insertBefore(splash, document.body.firstChild)
+
+  let sec = 10
+  const skipBtn = document.getElementById('skip')
+  const timer = setInterval(() => {
+    sec--
+    skipBtn.innerText = '跳过 ' + sec
+    if (sec <= 0) {
+      clearInterval(timer)
+      splash.remove()
+    }
+  }, 1000)
+
+  skipBtn.onclick = () => {
+    clearInterval(timer)
+    splash.remove()
+  }
+}
+
+// ==================== 长按保存弹窗（最终完美版）====================
 let timer = null
 let currentImg = null
 let isModalShow = false
 
-// 触摸开始
 document.addEventListener('touchstart', e => {
   if (e.target.tagName === 'IMG') {
     currentImg = e.target
     timer = setTimeout(() => {
-      if (!isModalShow) {
-        showSaveModal()
-      }
+      if (!isModalShow) showSaveModal()
     }, 500)
   }
 }, false)
 
-// 取消长按
-document.addEventListener('touchend', () => {
-  clearTimeout(timer)
-}, false)
+document.addEventListener('touchend', () => clearTimeout(timer), false)
+document.addEventListener('touchmove', () => clearTimeout(timer), false)
 
-document.addEventListener('touchmove', () => {
-  clearTimeout(timer)
-}, false)
-
-// 电脑右键
 document.addEventListener('contextmenu', e => {
   if (e.target.tagName === 'IMG') {
     e.preventDefault()
     currentImg = e.target
-    if (!isModalShow) {
-      showSaveModal()
-    }
+    if (!isModalShow) showSaveModal()
   }
 }, false)
 
-// 弹窗（全局只允许同时存在一个）
 function showSaveModal() {
-  // 强制只允许一个弹窗
   if (isModalShow) return
   isModalShow = true
 
@@ -114,3 +151,6 @@ function showSaveModal() {
     isModalShow = false
   }
 }
+
+// 延迟100ms启动开屏，仅首次启动显示
+setTimeout(showSplash, 100)
