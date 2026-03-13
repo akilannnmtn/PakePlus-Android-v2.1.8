@@ -153,4 +153,4 @@ function showSaveModal() {
 }
 
 // 延迟100ms启动开屏，仅首次启动显示
-setTimeout(showSplash, 100)
+setTimeout(showSplash, 500)
